@@ -12,11 +12,26 @@ class VirtualSerialHub
     static List<Bridge> _bridges = new List<Bridge>();
     static int _nextId = 1;
     static bool _running = true;
+    static bool _hexMode = false;
 
     static void Main(string[] args)
     {
-        Console.WriteLine("VirtualSerialHub v1.0 - User-Mode Serial Bridge");
-        Console.WriteLine("================================================\n");
+        List<string> argList = new List<string>(args);
+        
+        // Parse global flags
+        if (argList.Contains("--hex") || argList.Contains("-h"))
+        {
+            _hexMode = true;
+            argList.Remove("--hex");
+            argList.Remove("-h");
+        }
+
+        args = argList.ToArray();
+
+        Console.WriteLine("VirtualSerialHub v1.1 - User-Mode Serial Bridge");
+        Console.WriteLine("================================================");
+        if (_hexMode) Console.WriteLine("[Hex dump mode enabled]");
+        Console.WriteLine();
 
         if (args.Length == 0) { Interactive(); return; }
 
@@ -83,6 +98,10 @@ class VirtualSerialHub
                         if (parts.Length < 2) Console.WriteLine("Usage: stop <id>");
                         else StopBridge(int.Parse(parts[1]));
                         break;
+                    case "hex":
+                        _hexMode = !_hexMode;
+                        Console.WriteLine("Hex mode: " + (_hexMode ? "ON" : "OFF"));
+                        break;
                     case "quit":
                     case "exit":
                         _running = false;
@@ -112,7 +131,9 @@ class VirtualSerialHub
         Console.WriteLine("  list                    - Show available COM ports");
         Console.WriteLine("  status                  - Show active bridges");
         Console.WriteLine("  stop <id>               - Stop a bridge");
+        Console.WriteLine("  hex                     - Toggle hex dump mode");
         Console.WriteLine("  quit                    - Exit");
+        Console.WriteLine("\nFlags: --hex, -h          - Enable hex dump at startup");
     }
 
     static void ListPorts()
@@ -142,6 +163,7 @@ class VirtualSerialHub
                     Console.WriteLine(b.StatusLine());
         }
         Console.WriteLine("-------------------------------------------------------------------------------");
+        Console.WriteLine("Hex mode: " + (_hexMode ? "ON" : "OFF"));
     }
 
     static void StartBridge(string port1, string port2)
@@ -194,6 +216,38 @@ class VirtualSerialHub
         StopAll();
     }
 
+    static void PrintHex(string prefix, byte[] data, int length, ConsoleColor color)
+    {
+        if (!_hexMode || length == 0) return;
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append(prefix);
+        sb.Append(" ");
+
+        for (int i = 0; i < length; i++)
+        {
+            sb.Append(data[i].ToString("X2"));
+            if (i < length - 1) sb.Append(" ");
+        }
+
+        // Also show ASCII representation
+        sb.Append("  |");
+        for (int i = 0; i < length; i++)
+        {
+            char c = (char)data[i];
+            sb.Append((c >= 32 && c < 127) ? c : '.');
+        }
+        sb.Append("|");
+
+        lock (Console.Out)
+        {
+            ConsoleColor prev = Console.ForegroundColor;
+            Console.ForegroundColor = color;
+            Console.WriteLine(sb.ToString());
+            Console.ForegroundColor = prev;
+        }
+    }
+
     abstract class Bridge
     {
         public int Id;
@@ -217,8 +271,8 @@ class VirtualSerialHub
             _sp1 = OpenPort(_port1);
             _sp2 = OpenPort(_port2);
             _active = true;
-            _t1 = new Thread(() => Relay(_sp1, _sp2, ref RxBytes)) { IsBackground = true };
-            _t2 = new Thread(() => Relay(_sp2, _sp1, ref TxBytes)) { IsBackground = true };
+            _t1 = new Thread(() => Relay(_sp1, _sp2, _port1, ref RxBytes, ConsoleColor.Green)) { IsBackground = true };
+            _t2 = new Thread(() => Relay(_sp2, _sp1, _port2, ref TxBytes, ConsoleColor.Yellow)) { IsBackground = true };
             _t1.Start(); _t2.Start();
         }
 
@@ -230,7 +284,7 @@ class VirtualSerialHub
             return sp;
         }
 
-        void Relay(SerialPort src, SerialPort dst, ref long counter)
+        void Relay(SerialPort src, SerialPort dst, string srcName, ref long counter, ConsoleColor color)
         {
             byte[] buf = new byte[4096];
             while (_active)
@@ -238,7 +292,12 @@ class VirtualSerialHub
                 try
                 {
                     int n = src.BaseStream.Read(buf, 0, buf.Length);
-                    if (n > 0) { dst.BaseStream.Write(buf, 0, n); counter += n; }
+                    if (n > 0)
+                    {
+                        PrintHex("[" + srcName + "]", buf, n, color);
+                        dst.BaseStream.Write(buf, 0, n);
+                        counter += n;
+                    }
                 }
                 catch (TimeoutException) { }
                 catch { if (_active) Thread.Sleep(10); }
@@ -264,6 +323,8 @@ class VirtualSerialHub
         int _port;
         TcpListener _listener;
         List<TcpClient> _clients = new List<TcpClient>();
+        Dictionary<TcpClient, int> _clientIds = new Dictionary<TcpClient, int>();
+        int _nextClientId = 1;
         Thread _acceptThread;
         volatile bool _active;
 
@@ -286,14 +347,20 @@ class VirtualSerialHub
                 {
                     if (!_listener.Pending()) { Thread.Sleep(50); continue; }
                     var client = _listener.AcceptTcpClient();
-                    lock (_clients) _clients.Add(client);
-                    new Thread(() => ClientLoop(client)) { IsBackground = true }.Start();
+                    int clientId;
+                    lock (_clients)
+                    {
+                        _clients.Add(client);
+                        clientId = _nextClientId++;
+                        _clientIds[client] = clientId;
+                    }
+                    new Thread(() => ClientLoop(client, clientId)) { IsBackground = true }.Start();
                 }
                 catch { if (_active) Thread.Sleep(10); }
             }
         }
 
-        void ClientLoop(TcpClient client)
+        void ClientLoop(TcpClient client, int clientId)
         {
             byte[] buf = new byte[4096];
             var stream = client.GetStream();
@@ -307,13 +374,22 @@ class VirtualSerialHub
                     if (n == 0) break;
                     RxBytes += n;
 
+                    PrintHex("[Cli" + clientId + " Rx]", buf, n, ConsoleColor.Green);
+
                     lock (_clients)
                     {
                         foreach (var c in _clients)
                         {
                             if (c != client && c.Connected)
                             {
-                                try { c.GetStream().Write(buf, 0, n); TxBytes += n; }
+                                try
+                                {
+                                    c.GetStream().Write(buf, 0, n);
+                                    TxBytes += n;
+                                    int targetId;
+                                    if (_clientIds.TryGetValue(c, out targetId))
+                                        PrintHex("[Cli" + targetId + " Tx]", buf, n, ConsoleColor.Yellow);
+                                }
                                 catch { }
                             }
                         }
@@ -323,7 +399,11 @@ class VirtualSerialHub
                 catch { Thread.Sleep(10); }
             }
 
-            lock (_clients) _clients.Remove(client);
+            lock (_clients)
+            {
+                _clients.Remove(client);
+                _clientIds.Remove(client);
+            }
             try { client.Close(); } catch { }
         }
 
@@ -331,7 +411,12 @@ class VirtualSerialHub
         {
             _active = false;
             try { if (_listener != null) _listener.Stop(); } catch { }
-            lock (_clients) { foreach (var c in _clients) try { c.Close(); } catch { } _clients.Clear(); }
+            lock (_clients)
+            {
+                foreach (var c in _clients) try { c.Close(); } catch { }
+                _clients.Clear();
+                _clientIds.Clear();
+            }
         }
 
         public override string StatusLine()
@@ -399,6 +484,9 @@ class VirtualSerialHub
                     int n = stream.Read(buf, 0, buf.Length);
                     if (n == 0) break;
                     RxBytes += n;
+
+                    PrintHex("[TCP Rx]", buf, n, ConsoleColor.Green);
+
                     lock (_serial) _serial.BaseStream.Write(buf, 0, n);
                 }
                 catch (IOException) { }
@@ -421,11 +509,23 @@ class VirtualSerialHub
                     if (n > 0)
                     {
                         TxBytes += n;
+
+                        PrintHex("[" + _comPort + " Rx]", buf, n, ConsoleColor.Cyan);
+
                         lock (_clients)
                         {
                             foreach (var c in _clients)
+                            {
                                 if (c.Connected)
-                                    try { c.GetStream().Write(buf, 0, n); } catch { }
+                                {
+                                    try
+                                    {
+                                        c.GetStream().Write(buf, 0, n);
+                                        PrintHex("[TCP Tx]", buf, n, ConsoleColor.Yellow);
+                                    }
+                                    catch { }
+                                }
+                            }
                         }
                     }
                 }
