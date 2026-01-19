@@ -1,0 +1,10 @@
+# Build artifacts
+*.exe
+*.dll
+*.pdb
+*.obj
+
+# Editor/IDE files
+.vs/
+*.user
+*.suo
