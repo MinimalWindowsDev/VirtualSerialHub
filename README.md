@@ -1,52 +1,36 @@
 # VirtualSerialHub
 
-A minimalistic, single-file C# CLI tool that acts as a user-mode serial bridge and TCP loopback utility. It serves as a lightweight, user-mode alternative to complex kernel-mode drivers like `com0com` for basic bridging and debugging needs.
+A minimalistic, single-file C# CLI tool that acts as a user-mode serial bridge and TCP loopback utility. It serves as a lightweight alternative to kernel-mode drivers like `com0com`.
 
 ## Features
-* **Bridge:** Relay data bi-directionally between two physical COM ports.
-* **TCP Serial:** Expose a physical COM port over a generic TCP socket.
-* **Loopback:** Create a pure TCP echo server for testing network-serial applications.
-* **Hex Dump:** Live traffic inspection with color-coded Rx/Tx logging (`--hex`).
-* **Dependency Free:** Runs on standard .NET Framework 4.x using only native libraries.
+* **Bridge:** Relay data between two physical COM ports.
+* **TCP Serial:** Expose a physical COM port over TCP.
+* **Loopback:** Create a pure TCP echo server.
+* **Hex Dump:** Live traffic inspection (`--hex`).
+* **Configurable:** Support for custom Baud Rate, Parity, Data Bits, and Stop Bits.
+* **Dependency Free:** Runs on standard .NET Framework 4.x.
 
 ## Build
-Compile using the standard Windows C# compiler:
-
 ```cmd
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:exe /out:VirtualSerialHub.exe VirtualSerialHub.cs
 
 ```
 
+
 ## Usage
 
-Run in **Interactive Mode**:
 
 ```cmd
+:: Interactive Mode
 .\VirtualSerialHub.exe
 
-```
+:: Bridge two ports with custom settings
+VirtualSerialHub.exe bridge COM3:115200 COM4:9600,7,E,1
 
-Or use **Command-Line Arguments**:
+:: Expose COM port to TCP (Access via Telnet)
+VirtualSerialHub.exe tcpserial COM3:38400,8,N,1 9000
 
-```cmd
-:: Bridge two physical ports
-VirtualSerialHub.exe bridge COM3 COM4
-
-:: Bridge COM port to TCP (Access COM3 via Telnet on port 9000)
-VirtualSerialHub.exe tcpserial COM3 9000
-
-:: Start a TCP Echo Server
-VirtualSerialHub.exe loopback 9600
-
-```
-
-### Debugging
-
-To view raw traffic bytes in real-time, use the hex flag:
-
-```cmd
+:: Debugging (Hex Dump)
 VirtualSerialHub.exe --hex
 
 ```
-
-*Or type `hex` inside the interactive console to toggle it on/off.*

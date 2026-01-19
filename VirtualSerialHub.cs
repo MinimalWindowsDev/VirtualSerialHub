@@ -14,11 +14,82 @@ class VirtualSerialHub
     static bool _running = true;
     static bool _hexMode = false;
 
+    struct SerialConfig
+    {
+        public string PortName;
+        public int BaudRate;
+        public int DataBits;
+        public Parity Parity;
+        public StopBits StopBits;
+
+        public static SerialConfig Parse(string input)
+        {
+            var cfg = new SerialConfig { BaudRate = 9600, DataBits = 8, Parity = Parity.None, StopBits = StopBits.One };
+
+            int colonIdx = input.IndexOf(':');
+            if (colonIdx < 0)
+            {
+                cfg.PortName = input;
+                return cfg;
+            }
+
+            cfg.PortName = input.Substring(0, colonIdx);
+            string[] parts = input.Substring(colonIdx + 1).Split(',');
+
+            if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]))
+                cfg.BaudRate = int.Parse(parts[0]);
+
+            if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]))
+                cfg.DataBits = int.Parse(parts[1]);
+
+            if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]))
+            {
+                switch (parts[2].ToUpper())
+                {
+                    case "N": cfg.Parity = Parity.None; break;
+                    case "O": cfg.Parity = Parity.Odd; break;
+                    case "E": cfg.Parity = Parity.Even; break;
+                    case "M": cfg.Parity = Parity.Mark; break;
+                    case "S": cfg.Parity = Parity.Space; break;
+                    default: cfg.Parity = Parity.None; break;
+                }
+            }
+
+            if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]))
+            {
+                switch (parts[3])
+                {
+                    case "1": cfg.StopBits = StopBits.One; break;
+                    case "1.5": cfg.StopBits = StopBits.OnePointFive; break;
+                    case "2": cfg.StopBits = StopBits.Two; break;
+                    default: cfg.StopBits = StopBits.One; break;
+                }
+            }
+
+            return cfg;
+        }
+
+        public override string ToString()
+        {
+            char p = 'N';
+            switch (Parity)
+            {
+                case Parity.Odd: p = 'O'; break;
+                case Parity.Even: p = 'E'; break;
+                case Parity.Mark: p = 'M'; break;
+                case Parity.Space: p = 'S'; break;
+            }
+            string s = StopBits == StopBits.OnePointFive ? "1.5" : (StopBits == StopBits.Two ? "2" : "1");
+            return string.Format("{0}:{1},{2},{3},{4}", PortName, BaudRate, DataBits, p, s);
+        }
+
+        public string Short { get { return PortName; } }
+    }
+
     static void Main(string[] args)
     {
         List<string> argList = new List<string>(args);
-        
-        // Parse global flags
+
         if (argList.Contains("--hex") || argList.Contains("-h"))
         {
             _hexMode = true;
@@ -28,7 +99,7 @@ class VirtualSerialHub
 
         args = argList.ToArray();
 
-        Console.WriteLine("VirtualSerialHub v1.1 - User-Mode Serial Bridge");
+        Console.WriteLine("VirtualSerialHub v1.2 - User-Mode Serial Bridge");
         Console.WriteLine("================================================");
         if (_hexMode) Console.WriteLine("[Hex dump mode enabled]");
         Console.WriteLine();
@@ -38,7 +109,7 @@ class VirtualSerialHub
         switch (args[0].ToLower())
         {
             case "bridge":
-                if (args.Length < 3) { Console.WriteLine("Usage: bridge <COM1> <COM2>"); return; }
+                if (args.Length < 3) { Console.WriteLine("Usage: bridge <COM1[:settings]> <COM2[:settings]>"); return; }
                 StartBridge(args[1], args[2]);
                 WaitForExit();
                 break;
@@ -48,7 +119,7 @@ class VirtualSerialHub
                 WaitForExit();
                 break;
             case "tcpserial":
-                if (args.Length < 3) { Console.WriteLine("Usage: tcpserial <COMx> <TCPPort>"); return; }
+                if (args.Length < 3) { Console.WriteLine("Usage: tcpserial <COMx[:settings]> <TCPPort>"); return; }
                 StartTcpSerial(args[1], int.Parse(args[2]));
                 WaitForExit();
                 break;
@@ -78,14 +149,14 @@ class VirtualSerialHub
                 switch (cmd)
                 {
                     case "bridge":
-                        if (parts.Length < 3) Console.WriteLine("Usage: bridge <COM1> <COM2>");
+                        if (parts.Length < 3) Console.WriteLine("Usage: bridge <COM1[:settings]> <COM2[:settings]>");
                         else StartBridge(parts[1], parts[2]);
                         break;
                     case "loopback":
                         StartLoopback(parts.Length > 1 ? int.Parse(parts[1]) : 9600);
                         break;
                     case "tcpserial":
-                        if (parts.Length < 3) Console.WriteLine("Usage: tcpserial <COMx> <TCPPort>");
+                        if (parts.Length < 3) Console.WriteLine("Usage: tcpserial <COMx[:settings]> <TCPPort>");
                         else StartTcpSerial(parts[1], int.Parse(parts[2]));
                         break;
                     case "list":
@@ -133,6 +204,12 @@ class VirtualSerialHub
         Console.WriteLine("  stop <id>               - Stop a bridge");
         Console.WriteLine("  hex                     - Toggle hex dump mode");
         Console.WriteLine("  quit                    - Exit");
+        Console.WriteLine("\nPort format: COMx[:Baud,DataBits,Parity,StopBits]");
+        Console.WriteLine("  Examples:  COM3              (9600,8,N,1 default)");
+        Console.WriteLine("             COM3:115200       (115200,8,N,1)");
+        Console.WriteLine("             COM3:9600,7,E,2   (9600,7,Even,2)");
+        Console.WriteLine("  Parity:    N=None O=Odd E=Even M=Mark S=Space");
+        Console.WriteLine("  StopBits:  1, 1.5, 2");
         Console.WriteLine("\nFlags: --hex, -h          - Enable hex dump at startup");
     }
 
@@ -151,9 +228,9 @@ class VirtualSerialHub
     static void ShowStatus()
     {
         Console.WriteLine("\nActive Bridges:");
-        Console.WriteLine("-------------------------------------------------------------------------------");
-        Console.WriteLine("  ID | Type       | Endpoints                          | Rx       | Tx       ");
-        Console.WriteLine("-------------------------------------------------------------------------------");
+        Console.WriteLine("---------------------------------------------------------------------------------------");
+        Console.WriteLine("  ID | Type       | Endpoints                                    | Rx       | Tx       ");
+        Console.WriteLine("---------------------------------------------------------------------------------------");
         lock (_bridges)
         {
             if (_bridges.Count == 0)
@@ -162,16 +239,18 @@ class VirtualSerialHub
                 foreach (var b in _bridges)
                     Console.WriteLine(b.StatusLine());
         }
-        Console.WriteLine("-------------------------------------------------------------------------------");
+        Console.WriteLine("---------------------------------------------------------------------------------------");
         Console.WriteLine("Hex mode: " + (_hexMode ? "ON" : "OFF"));
     }
 
     static void StartBridge(string port1, string port2)
     {
-        var b = new SerialBridge(_nextId++, port1, port2);
+        var cfg1 = SerialConfig.Parse(port1);
+        var cfg2 = SerialConfig.Parse(port2);
+        var b = new SerialBridge(_nextId++, cfg1, cfg2);
         lock (_bridges) _bridges.Add(b);
         b.Start();
-        Console.WriteLine("Started bridge #{0}: {1} <-> {2}", b.Id, port1, port2);
+        Console.WriteLine("Started bridge #{0}: {1} <-> {2}", b.Id, cfg1, cfg2);
     }
 
     static void StartLoopback(int port)
@@ -185,10 +264,11 @@ class VirtualSerialHub
 
     static void StartTcpSerial(string comPort, int tcpPort)
     {
-        var b = new TcpSerialBridge(_nextId++, comPort, tcpPort);
+        var cfg = SerialConfig.Parse(comPort);
+        var b = new TcpSerialBridge(_nextId++, cfg, tcpPort);
         lock (_bridges) _bridges.Add(b);
         b.Start();
-        Console.WriteLine("Started TCP-Serial bridge #{0}: {1} <-> TCP:{2}", b.Id, comPort, tcpPort);
+        Console.WriteLine("Started TCP-Serial bridge #{0}: {1} <-> TCP:{2}", b.Id, cfg, tcpPort);
     }
 
     static void StopBridge(int id)
@@ -230,7 +310,6 @@ class VirtualSerialHub
             if (i < length - 1) sb.Append(" ");
         }
 
-        // Also show ASCII representation
         sb.Append("  |");
         for (int i = 0; i < length; i++)
         {
@@ -259,26 +338,29 @@ class VirtualSerialHub
 
     class SerialBridge : Bridge
     {
-        string _port1, _port2;
+        SerialConfig _cfg1, _cfg2;
         SerialPort _sp1, _sp2;
         Thread _t1, _t2;
         volatile bool _active;
 
-        public SerialBridge(int id, string p1, string p2) { Id = id; _port1 = p1; _port2 = p2; }
+        public SerialBridge(int id, SerialConfig cfg1, SerialConfig cfg2)
+        {
+            Id = id; _cfg1 = cfg1; _cfg2 = cfg2;
+        }
 
         public override void Start()
         {
-            _sp1 = OpenPort(_port1);
-            _sp2 = OpenPort(_port2);
+            _sp1 = OpenPort(_cfg1);
+            _sp2 = OpenPort(_cfg2);
             _active = true;
-            _t1 = new Thread(() => Relay(_sp1, _sp2, _port1, ref RxBytes, ConsoleColor.Green)) { IsBackground = true };
-            _t2 = new Thread(() => Relay(_sp2, _sp1, _port2, ref TxBytes, ConsoleColor.Yellow)) { IsBackground = true };
+            _t1 = new Thread(() => Relay(_sp1, _sp2, _cfg1.Short, ref RxBytes, ConsoleColor.Green)) { IsBackground = true };
+            _t2 = new Thread(() => Relay(_sp2, _sp1, _cfg2.Short, ref TxBytes, ConsoleColor.Yellow)) { IsBackground = true };
             _t1.Start(); _t2.Start();
         }
 
-        SerialPort OpenPort(string name)
+        SerialPort OpenPort(SerialConfig cfg)
         {
-            var sp = new SerialPort(name, 9600, Parity.None, 8, StopBits.One);
+            var sp = new SerialPort(cfg.PortName, cfg.BaudRate, cfg.Parity, cfg.DataBits, cfg.StopBits);
             sp.ReadTimeout = 100;
             sp.Open();
             return sp;
@@ -313,8 +395,8 @@ class VirtualSerialHub
 
         public override string StatusLine()
         {
-            return string.Format("  {0,2} | Serial     | {1,-10} <-> {2,-10}         | {3,8} | {4,8}",
-                Id, _port1, _port2, RxBytes, TxBytes);
+            return string.Format("  {0,2} | Serial     | {1,-20} <-> {2,-20} | {3,8} | {4,8}",
+                Id, _cfg1, _cfg2, RxBytes, TxBytes);
         }
     }
 
@@ -423,14 +505,14 @@ class VirtualSerialHub
         {
             int cnt;
             lock (_clients) cnt = _clients.Count;
-            return string.Format("  {0,2} | Loopback   | TCP:{1,-5} ({2} clients)            | {3,8} | {4,8}",
+            return string.Format("  {0,2} | Loopback   | TCP:{1,-5} ({2} clients)                      | {3,8} | {4,8}",
                 Id, _port, cnt, RxBytes, TxBytes);
         }
     }
 
     class TcpSerialBridge : Bridge
     {
-        string _comPort;
+        SerialConfig _cfg;
         int _tcpPort;
         SerialPort _serial;
         TcpListener _listener;
@@ -438,11 +520,11 @@ class VirtualSerialHub
         Thread _acceptThread, _serialThread;
         volatile bool _active;
 
-        public TcpSerialBridge(int id, string com, int tcp) { Id = id; _comPort = com; _tcpPort = tcp; }
+        public TcpSerialBridge(int id, SerialConfig cfg, int tcp) { Id = id; _cfg = cfg; _tcpPort = tcp; }
 
         public override void Start()
         {
-            _serial = new SerialPort(_comPort, 9600, Parity.None, 8, StopBits.One);
+            _serial = new SerialPort(_cfg.PortName, _cfg.BaudRate, _cfg.Parity, _cfg.DataBits, _cfg.StopBits);
             _serial.ReadTimeout = 100;
             _serial.Open();
 
@@ -510,7 +592,7 @@ class VirtualSerialHub
                     {
                         TxBytes += n;
 
-                        PrintHex("[" + _comPort + " Rx]", buf, n, ConsoleColor.Cyan);
+                        PrintHex("[" + _cfg.Short + " Rx]", buf, n, ConsoleColor.Cyan);
 
                         lock (_clients)
                         {
@@ -546,8 +628,8 @@ class VirtualSerialHub
         {
             int cnt;
             lock (_clients) cnt = _clients.Count;
-            return string.Format("  {0,2} | TCP-Serial | {1,-10} <-> TCP:{2,-5} ({3}cli)  | {4,8} | {5,8}",
-                Id, _comPort, _tcpPort, cnt, RxBytes, TxBytes);
+            return string.Format("  {0,2} | TCP-Serial | {1,-20} <-> TCP:{2,-5} ({3}cli)   | {4,8} | {5,8}",
+                Id, _cfg, _tcpPort, cnt, RxBytes, TxBytes);
         }
     }
 }
