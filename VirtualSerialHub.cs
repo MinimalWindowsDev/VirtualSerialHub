@@ -99,7 +99,7 @@ class VirtualSerialHub
 
         args = argList.ToArray();
 
-        Console.WriteLine("VirtualSerialHub v1.2 - User-Mode Serial Bridge");
+        Console.WriteLine("VirtualSerialHub v1.3 - User-Mode Serial Bridge");
         Console.WriteLine("================================================");
         if (_hexMode) Console.WriteLine("[Hex dump mode enabled]");
         Console.WriteLine();
@@ -196,7 +196,7 @@ class VirtualSerialHub
     static void PrintHelp()
     {
         Console.WriteLine("Commands:");
-        Console.WriteLine("  bridge <COM1> <COM2>    - Bridge two serial ports");
+        Console.WriteLine("  bridge <COM1> <COM2>    - Bridge two serial ports (with signal relay)");
         Console.WriteLine("  loopback [port]         - TCP loopback echo server (default: 9600)");
         Console.WriteLine("  tcpserial <COMx> <port> - Bridge serial port to TCP");
         Console.WriteLine("  list                    - Show available COM ports");
@@ -210,6 +210,7 @@ class VirtualSerialHub
         Console.WriteLine("             COM3:9600,7,E,2   (9600,7,Even,2)");
         Console.WriteLine("  Parity:    N=None O=Odd E=Even M=Mark S=Space");
         Console.WriteLine("  StopBits:  1, 1.5, 2");
+        Console.WriteLine("\nSignal bridging: CTS->RTS, DSR->DTR (hardware flow control)");
         Console.WriteLine("\nFlags: --hex, -h          - Enable hex dump at startup");
     }
 
@@ -251,6 +252,7 @@ class VirtualSerialHub
         lock (_bridges) _bridges.Add(b);
         b.Start();
         Console.WriteLine("Started bridge #{0}: {1} <-> {2}", b.Id, cfg1, cfg2);
+        Console.WriteLine("  Signal bridging enabled: CTS->RTS, DSR->DTR");
     }
 
     static void StartLoopback(int port)
@@ -327,6 +329,18 @@ class VirtualSerialHub
         }
     }
 
+    static void PrintSignal(string msg, ConsoleColor color)
+    {
+        if (!_hexMode) return;
+        lock (Console.Out)
+        {
+            ConsoleColor prev = Console.ForegroundColor;
+            Console.ForegroundColor = color;
+            Console.WriteLine(msg);
+            Console.ForegroundColor = prev;
+        }
+    }
+
     abstract class Bridge
     {
         public int Id;
@@ -343,6 +357,9 @@ class VirtualSerialHub
         Thread _t1, _t2;
         volatile bool _active;
 
+        // Cached signal states for polling fallback
+        bool _sp1Cts, _sp1Dsr, _sp2Cts, _sp2Dsr;
+
         public SerialBridge(int id, SerialConfig cfg1, SerialConfig cfg2)
         {
             Id = id; _cfg1 = cfg1; _cfg2 = cfg2;
@@ -352,9 +369,18 @@ class VirtualSerialHub
         {
             _sp1 = OpenPort(_cfg1);
             _sp2 = OpenPort(_cfg2);
+
+            // Setup PinChanged event handlers for low-latency signal bridging
+            _sp1.PinChanged += OnSp1PinChanged;
+            _sp2.PinChanged += OnSp2PinChanged;
+
+            // Initial signal sync
+            SyncSignals(_sp1, _sp2, ref _sp1Cts, ref _sp1Dsr);
+            SyncSignals(_sp2, _sp1, ref _sp2Cts, ref _sp2Dsr);
+
             _active = true;
-            _t1 = new Thread(() => Relay(_sp1, _sp2, _cfg1.Short, ref RxBytes, ConsoleColor.Green)) { IsBackground = true };
-            _t2 = new Thread(() => Relay(_sp2, _sp1, _cfg2.Short, ref TxBytes, ConsoleColor.Yellow)) { IsBackground = true };
+            _t1 = new Thread(() => Relay(_sp1, _sp2, _cfg1.Short, ref RxBytes, ConsoleColor.Green, ref _sp1Cts, ref _sp1Dsr)) { IsBackground = true };
+            _t2 = new Thread(() => Relay(_sp2, _sp1, _cfg2.Short, ref TxBytes, ConsoleColor.Yellow, ref _sp2Cts, ref _sp2Dsr)) { IsBackground = true };
             _t1.Start(); _t2.Start();
         }
 
@@ -362,13 +388,77 @@ class VirtualSerialHub
         {
             var sp = new SerialPort(cfg.PortName, cfg.BaudRate, cfg.Parity, cfg.DataBits, cfg.StopBits);
             sp.ReadTimeout = 100;
+            sp.DtrEnable = true;
+            sp.RtsEnable = true;
             sp.Open();
             return sp;
         }
 
-        void Relay(SerialPort src, SerialPort dst, string srcName, ref long counter, ConsoleColor color)
+        void OnSp1PinChanged(object sender, SerialPinChangedEventArgs e)
+        {
+            if (!_active) return;
+            try
+            {
+                if (e.EventType == SerialPinChange.CtsChanged)
+                {
+                    bool cts = _sp1.CtsHolding;
+                    _sp2.RtsEnable = cts;
+                    _sp1Cts = cts;
+                    PrintSignal(string.Format("[{0}] CTS={1} -> [{2}] RTS={1}", _cfg1.Short, cts ? "ON" : "OFF", _cfg2.Short), ConsoleColor.Magenta);
+                }
+                else if (e.EventType == SerialPinChange.DsrChanged)
+                {
+                    bool dsr = _sp1.DsrHolding;
+                    _sp2.DtrEnable = dsr;
+                    _sp1Dsr = dsr;
+                    PrintSignal(string.Format("[{0}] DSR={1} -> [{2}] DTR={1}", _cfg1.Short, dsr ? "ON" : "OFF", _cfg2.Short), ConsoleColor.Magenta);
+                }
+            }
+            catch { }
+        }
+
+        void OnSp2PinChanged(object sender, SerialPinChangedEventArgs e)
+        {
+            if (!_active) return;
+            try
+            {
+                if (e.EventType == SerialPinChange.CtsChanged)
+                {
+                    bool cts = _sp2.CtsHolding;
+                    _sp1.RtsEnable = cts;
+                    _sp2Cts = cts;
+                    PrintSignal(string.Format("[{0}] CTS={1} -> [{2}] RTS={1}", _cfg2.Short, cts ? "ON" : "OFF", _cfg1.Short), ConsoleColor.Magenta);
+                }
+                else if (e.EventType == SerialPinChange.DsrChanged)
+                {
+                    bool dsr = _sp2.DsrHolding;
+                    _sp1.DtrEnable = dsr;
+                    _sp2Dsr = dsr;
+                    PrintSignal(string.Format("[{0}] DSR={1} -> [{2}] DTR={1}", _cfg2.Short, dsr ? "ON" : "OFF", _cfg1.Short), ConsoleColor.Magenta);
+                }
+            }
+            catch { }
+        }
+
+        void SyncSignals(SerialPort src, SerialPort dst, ref bool cachedCts, ref bool cachedDsr)
+        {
+            try
+            {
+                bool cts = src.CtsHolding;
+                bool dsr = src.DsrHolding;
+                dst.RtsEnable = cts;
+                dst.DtrEnable = dsr;
+                cachedCts = cts;
+                cachedDsr = dsr;
+            }
+            catch { }
+        }
+
+        void Relay(SerialPort src, SerialPort dst, string srcName, ref long counter, ConsoleColor color, ref bool cachedCts, ref bool cachedDsr)
         {
             byte[] buf = new byte[4096];
+            int pollCounter = 0;
+
             while (_active)
             {
                 try
@@ -383,12 +473,41 @@ class VirtualSerialHub
                 }
                 catch (TimeoutException) { }
                 catch { if (_active) Thread.Sleep(10); }
+
+                // Safety poll for signal changes (every ~10 iterations, ~1 second)
+                // Some drivers may not fire PinChanged events reliably
+                pollCounter++;
+                if (pollCounter >= 10)
+                {
+                    pollCounter = 0;
+                    try
+                    {
+                        bool cts = src.CtsHolding;
+                        bool dsr = src.DsrHolding;
+
+                        if (cts != cachedCts)
+                        {
+                            dst.RtsEnable = cts;
+                            cachedCts = cts;
+                            PrintSignal(string.Format("[{0}] CTS={1} -> RTS (poll)", srcName, cts ? "ON" : "OFF"), ConsoleColor.DarkMagenta);
+                        }
+                        if (dsr != cachedDsr)
+                        {
+                            dst.DtrEnable = dsr;
+                            cachedDsr = dsr;
+                            PrintSignal(string.Format("[{0}] DSR={1} -> DTR (poll)", srcName, dsr ? "ON" : "OFF"), ConsoleColor.DarkMagenta);
+                        }
+                    }
+                    catch { }
+                }
             }
         }
 
         public override void Stop()
         {
             _active = false;
+            try { _sp1.PinChanged -= OnSp1PinChanged; } catch { }
+            try { _sp2.PinChanged -= OnSp2PinChanged; } catch { }
             try { if (_sp1 != null) _sp1.Close(); } catch { }
             try { if (_sp2 != null) _sp2.Close(); } catch { }
         }
