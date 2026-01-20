@@ -1,0 +1,86 @@
+;------------------------------------------------------------------------------
+; VirtualSerial.inf - Installation file for VirtualSerial null-modem driver
+;
+; Part of VirtualSerialHub - FLOSS alternative to com0com
+; License: MIT
+;------------------------------------------------------------------------------
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Ports
+ClassGuid   = {4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider    = %ManufacturerName%
+CatalogFile = VirtualSerial.cat
+DriverVer   = 01/01/2025,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir          = 13
+VirtualSerial.CopyFiles = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+VirtualSerial.sys = 1,,
+
+;------------------------------------------------------------------------------
+; Manufacturer / Models
+;------------------------------------------------------------------------------
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTamd64
+
+[Standard.NTamd64]
+%VirtualSerial.DeviceDesc% = VirtualSerial_Device, Root\VirtualSerial
+
+;------------------------------------------------------------------------------
+; Device Installation
+;------------------------------------------------------------------------------
+
+[VirtualSerial_Device.NT]
+CopyFiles = VirtualSerial.CopyFiles
+
+[VirtualSerial.CopyFiles]
+VirtualSerial.sys
+
+[VirtualSerial_Device.NT.HW]
+AddReg = VirtualSerial_HW_AddReg
+
+[VirtualSerial_HW_AddReg]
+; Mark as a legacy/root-enumerated device
+HKR,,FriendlyName,,%VirtualSerial.DeviceDesc%
+HKR,,PortSubClass,1,01
+; Assign COM port names
+HKR,,PortName,,"VCOM0"
+
+;------------------------------------------------------------------------------
+; Service Installation
+;------------------------------------------------------------------------------
+
+[VirtualSerial_Device.NT.Services]
+AddService = VirtualSerial, 0x00000002, VirtualSerial_Service_Inst
+
+[VirtualSerial_Service_Inst]
+DisplayName    = %ServiceDescription%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\VirtualSerial.sys
+LoadOrderGroup = Extended Base
+
+;------------------------------------------------------------------------------
+; WDF Co-Installer (Not used - pure WDM driver)
+;------------------------------------------------------------------------------
+
+; This driver uses WDM, not KMDF/UMDF
+
+;------------------------------------------------------------------------------
+; Strings
+;------------------------------------------------------------------------------
+
+[Strings]
+ManufacturerName    = "VirtualSerialHub Project"
+DiskName            = "VirtualSerial Installation Disk"
+VirtualSerial.DeviceDesc = "Virtual Serial Port Pair (VCOM0/VCOM1)"
+ServiceDescription  = "VirtualSerial Null-Modem Driver"

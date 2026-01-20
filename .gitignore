@@ -8,3 +8,7 @@
 .vs/
 *.user
 *.suo
+
+# Driver Build Artifacts
+Driver/build/
+*.wsb
